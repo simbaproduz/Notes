@@ -1,0 +1,213 @@
+SIMBAproduz_ = SIMBAproduz_ or {}
+
+SIMBAproduz_.RequireWeapon = true
+function SIMBAproduz_.setRequireWeapon(f) SIMBAproduz_.RequireWeapon = not not f end
+
+local function isWindow(o) return o and instanceof(o,"IsoWindow") end
+local function wIsOpen(w) local ok,r=pcall(function() return w:IsOpen() end); if ok then return r end; local ok2,r2=pcall(function() return w:isOpen() end); return ok2 and r2 or false end
+local function wIsSmashed(w) local ok,r=pcall(function() return w:isSmashed() end); return ok and r or false end
+local function wGlassRemoved(w) local ok,r=pcall(function() return w:isGlassRemoved() end); return ok and r or false end
+local function manhattanAdj(a,b) if not a or not b or a:getZ()~=b:getZ() then return false end; return (math.abs(a:getX()-b:getX())+math.abs(a:getY()-b:getY()))==1 end
+local function onThisSide(w,sq) if not w or not sq then return false end; local a=w:getSquare(); local b=w:getOppositeSquare(); return (a and manhattanAdj(sq,a)) or (b and manhattanAdj(sq,b)) or false end
+
+local function isGluedAndFacing(p, w)
+    if not p or not w then return false end
+    local ps = p:getSquare(); if not ps then return false end
+    local a  = w:getSquare()
+    local b  = w:getOppositeSquare()
+
+    local target = nil
+    if a and (math.abs(ps:getX()-a:getX())+math.abs(ps:getY()-a:getY()))==1 and ps:getZ()==a:getZ() then
+        target = a
+    elseif b and (math.abs(ps:getX()-b:getX())+math.abs(ps:getY()-b:getY()))==1 and ps:getZ()==b:getZ() then
+        target = b
+    else
+        return false
+    end
+
+return true
+
+
+end
+
+
+local function hasBarricade(w) return w and (w:getBarricadeOnSameSquare() or w:getBarricadeOnOppositeSquare() or (w.HasBarricade and w:HasBarricade())) ~= nil end
+local function hasSmashWeapon(p) local it=p and p:getPrimaryHandItem() or nil; return it and instanceof(it,"HandWeapon") or false end
+
+local function adjacentWindowByPlayer(p)
+    if not p then return nil end
+    local sq=p:getSquare(); if not sq then return nil end
+    local c=getCell(); local x,y,z=sq:getX(),sq:getY(),sq:getZ()
+    local arr={sq,c:getGridSquare(x+1,y,z),c:getGridSquare(x-1,y,z),c:getGridSquare(x,y+1,z),c:getGridSquare(x,y-1,z)}
+    for _, s in ipairs(arr) do
+        if s then
+            local objs=s:getSpecialObjects()
+            for i=0, objs:size()-1 do local w=objs:get(i); if isWindow(w) and onThisSide(w,sq) then return w end end
+        end
+    end
+    return nil
+end
+
+local function windowFromContext(worldobjects, player)
+    local sq=player and player:getSquare(); if not sq then return nil end
+    for _, o in ipairs(worldobjects) do
+        if isWindow(o) and onThisSide(o,sq) then return o end
+        if o and o.getSquare and o:getSquare() then
+            local objs=o:getSquare():getSpecialObjects()
+            for i=0, objs:size()-1 do local w=objs:get(i); if isWindow(w) and onThisSide(w,sq) then return w end end
+        end
+    end
+    return nil
+end
+
+local function safeAdd(action)
+    if not action then return false end
+    if type(action.maxTime) ~= "number" then action.maxTime = 30 end
+    action.stopOnWalk = true
+    action.stopOnRun  = true
+    ISTimedActionQueue.add(action)
+    return true
+end
+
+local function queueRemoveGlassVanilla(p, w)
+    if ISRemoveBrokenGlass then safeAdd(ISRemoveBrokenGlass:new(p,w)) else w:setGlassRemoved(true) end
+end
+
+local function queueClimbVanilla(p, w)
+    p:climbThroughWindow(w)
+end
+
+local QLP_SEQ = {}
+
+local function clearSeq(pNum) QLP_SEQ[pNum] = nil end
+
+local function stillValidSide(p, w)
+    return p and w and onThisSide(w, p:getSquare()) and not hasBarricade(w)
+end
+
+local function kickSequence(p, w)
+    local pNum = p:getPlayerNum()
+    QLP_SEQ[pNum] = nil
+
+    if wIsOpen(w) then
+        queueClimbVanilla(p, w)
+        return
+    end
+
+    if wGlassRemoved(w) then
+        queueClimbVanilla(p, w)
+        return
+    end
+
+if wIsSmashed(w) then
+    if p:getPrimaryHandItem() == nil then
+        p:Say("Voce precisa de algo na mao direita")
+        return
+    end
+    queueRemoveGlassVanilla(p, w)
+    QLP_SEQ[pNum] = { w = w, state = "awaitCleaned", queuedClean = true }
+    return
+end
+
+
+if SIMBAproduz_.RequireWeapon and not hasSmashWeapon(p) then
+    if w.isLocked and w:isLocked() then
+        p:Say("...")
+    end
+    if ISOpenCloseWindow then
+        ISTimedActionQueue.add(ISOpenCloseWindow:new(p, w))  
+    end
+    QLP_SEQ[pNum] = { w = w, state = "awaitOpened", queuedClean = false }
+    return
+end
+
+
+    if not wIsSmashed(w) and not wGlassRemoved(w) then
+        p:smashWindow(w)
+        QLP_SEQ[pNum] = { w = w, state = "awaitSmashed", queuedClean = false }
+        return
+    end
+
+    if not wGlassRemoved(w) then
+
+        if wIsSmashed(w) and (p:getPrimaryHandItem() == nil) then
+            p:Say("Remover vidro na mao nao vai rolar...")
+            return
+        end
+
+        queueRemoveGlassVanilla(p, w)
+        QLP_SEQ[pNum] = { w = w, state = "awaitCleaned", queuedClean = true }
+    else
+        queueClimbVanilla(p, w)
+    end
+
+end
+local function onTickSequencer()
+    for pNum, s in pairs(QLP_SEQ) do
+        local p = getSpecificPlayer(pNum)
+        local w = s and s.w or nil
+        if not p or p:isDead() or p:isSeatedInVehicle() or not w or not isGluedAndFacing(p, w) then
+
+            clearSeq(pNum)
+        else
+            if s.state == "awaitSmashed" then
+                if wIsSmashed(w) then
+                    if not s.queuedClean and not wGlassRemoved(w) then
+                        queueRemoveGlassVanilla(p, w)
+                        s.queuedClean = true
+                    end
+                    s.state = "awaitCleaned"
+                end
+
+elseif s.state == "awaitOpened" then
+    if wIsOpen(w) then
+        queueClimbVanilla(p, w)  
+        clearSeq(pNum)
+    end
+
+
+            elseif s.state == "awaitCleaned" then
+                if wGlassRemoved(w) then
+                    queueClimbVanilla(p, w)
+                    clearSeq(pNum)
+                end
+            else
+                clearSeq(pNum)
+            end
+        end
+    end
+end
+Events.OnTick.Add(onTickSequencer)
+
+local function runSequence(p, w)
+    if not p or not w then return end
+    
+    if not isGluedAndFacing(p, w) then
+    p:Say("Encosta e olha pra janela.")
+    return
+end
+
+
+    if hasBarricade(w) then p:Say("Barricada. Remova primeiro."); return end
+    kickSequence(p, w)
+end
+
+function SIMBAproduz_.OnFillWorldObjectContextMenu(playerNum, context, worldobjects, test)
+    local p=getSpecificPlayer(playerNum); if not p then return end
+    local w=windowFromContext(worldobjects,p); if not w then return end
+
+if not isGluedAndFacing(p, w) then return end
+
+    local opt=context:addOption("QUEBRAR > LIMPAR > PULAR", p, function(pp) runSequence(pp, w) end)
+    local tex=getTexture("media/ui/simba_qlp.png"); if tex then opt.iconTexture=tex end
+end
+Events.OnFillWorldObjectContextMenu.Add(SIMBAproduz_.OnFillWorldObjectContextMenu)
+
+function SIMBAproduz_.OnKeyPressed(key)
+    if key ~= Keyboard.KEY_F then return end
+    local p=getSpecificPlayer(0); if not p or p:isDead() or p:isSeatedInVehicle() then return end
+QLP_SEQ[p:getPlayerNum()] = nil
+    local w=adjacentWindowByPlayer(p); if not w then return end
+    runSequence(p, w)
+end
+Events.OnKeyPressed.Add(SIMBAproduz_.OnKeyPressed)
